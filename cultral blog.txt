@@ -1,0 +1,35 @@
+import { Header } from "@/components/header";
+import { ChroniclesHero } from "@/components/chronicles-hero";
+import { CuratedWisdom } from "@/components/curated-wisdom";
+import { GuardianCommunity } from "@/components/guardian-community";
+import { TranslationStation } from "@/components/translation-station";
+import { Footer } from "@/components/footer";
+
+export default function KnowledgeHub() {
+  return (
+    <main className="min-h-screen bg-background">
+      <Header />
+      
+      {/* Section 1: The Chronicles - Educational Storytelling Hero */}
+      <section id="chronicles">
+        <ChroniclesHero />
+      </section>
+
+      {/* Section 2: Curated Wisdom - Cultural Blogs */}
+      <section id="wisdom">
+        <CuratedWisdom />
+      </section>
+
+      {/* Section 3: Guardian Community - Participation Section */}
+      <section id="community">
+        <GuardianCommunity />
+      </section>
+
+      {/* Section 4: Translation Station - Crowdsourcing */}
+      <section id="translate">
+        <TranslationStation />
+      </section>
+
+      <Footer />
+    </main>
+  );

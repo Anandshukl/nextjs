@@ -1,0 +1,41 @@
+import { DashboardSidebar } from "@/components/dashboard/sidebar";
+import { DashboardHeader } from "@/components/dashboard/header";
+import { InteractiveGlobeWidget } from "@/components/dashboard/widgets/interactive-globe";
+import { CivilizationSyncWidget } from "@/components/dashboard/widgets/civilization-sync";
+import { GlobalVisaWidget } from "@/components/dashboard/widgets/global-visa";
+import { CurrencyTravelWidget } from "@/components/dashboard/widgets/currency-travel";
+
+export default function GlobalCulturalHub() {
+  return (
+    <div className="min-h-screen bg-background">
+      {/* Sidebar */}
+      <DashboardSidebar />
+
+      {/* Main Content */}
+      <main className="ml-64">
+        <DashboardHeader />
+
+        {/* Bento Grid */}
+        <div className="p-6">
+          <div className="grid auto-rows-[minmax(200px,auto)] grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">
+            {/* Central Widget: Interactive 3D Globe (spans 2 columns) */}
+            <div className="md:col-span-2 lg:row-span-2">
+              <InteractiveGlobeWidget />
+            </div>
+
+            {/* Civilization Sync Widget */}
+            <CivilizationSyncWidget />
+
+            {/* Global Visa Status Widget */}
+            <GlobalVisaWidget />
+
+            {/* Currency & Travel Widget (spans 2 columns on large screens) */}
+            <div className="lg:col-span-2">
+              <CurrencyTravelWidget />
+            </div>
+          </div>
+        </div>
+      </main>
+    </div>
+  );
+}
