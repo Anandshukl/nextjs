@@ -1,5 +1,4 @@
 @import 'tailwindcss';
-@import 'tw-animate-css';
 
 @custom-variant dark (&:is(.dark *));
 
@@ -152,4 +151,57 @@
 
 .animate-fade-in {
   animation: fade-in 0.5s ease-out forwards;
+}
+
+/* Light Theme */
+html.light-theme {
+  --background: #f8fafc;
+  --foreground: #0f172a;
+  --card: rgba(15, 23, 42, 0.05);
+  --card-foreground: #0f172a;
+  --popover: #e2e8f0;
+  --popover-foreground: #0f172a;
+  --muted: #e2e8f0;
+  --muted-foreground: #475569;
+  --input: rgba(15, 23, 42, 0.1);
+}
+
+html.light-theme body {
+  background: linear-gradient(135deg, #f0f4f8 0%, #d9e2ec 100%);
+  color: #0f172a;
+}
+
+html.light-theme nav {
+  background-color: #ffffff !important;
+  border-color: rgba(212, 175, 55, 0.2) !important;
+}
+
+html.light-theme section {
+  background-color: transparent;
+}
+
+html.light-theme .bg-slate-950,
+html.light-theme .bg-slate-900,
+html.light-theme .bg-slate-800 {
+  background-color: #ffffff !important;
+  border: 1px solid rgba(212, 175, 55, 0.2) !important;
+}
+
+html.light-theme .bg-gradient-to-br {
+  background: linear-gradient(135deg, #f0f4f8 0%, #d9e2ec 100%) !important;
+}
+
+html.light-theme .text-slate-300,
+html.light-theme .text-slate-400 {
+  color: #475569 !important;
+}
+
+html.light-theme footer {
+  background-color: #f8fafc !important;
+  border-top-color: rgba(212, 175, 55, 0.2) !important;
+}
+
+html.light-theme button:not(.bg-gold),
+html.light-theme a:not(.text-gold) {
+  color: #0f172a;
 }
