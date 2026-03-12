@@ -8,6 +8,8 @@ require('dotenv').config();
 const app = express();
 const PORT = 5000;
 
+console.log('Loaded env DB_HOST=', process.env.DB_HOST, 'DB_PORT=', process.env.DB_PORT);
+
 // Middleware
 app.use(cors());
 app.use(express.json());
@@ -15,6 +17,7 @@ app.use(express.json());
 // MySQL Connection Pool
 const pool = mysql.createPool({
   host: process.env.DB_HOST || 'localhost',
+  port: process.env.DB_PORT ? Number(process.env.DB_PORT) : 3306,
   user: process.env.DB_USER || 'root',
   password: process.env.DB_PASSWORD || '',
   database: process.env.DB_NAME || 'cultural_hub',
@@ -22,8 +25,129 @@ const pool = mysql.createPool({
   connectionLimit: 10,
   queueLimit: 0
 });
+// Adapter variables
+let useSqlite = false;
+let sqliteDb = null;
+
+// Helper: returns a connection-like object with `execute(sql, params)` and `release()`
+async function getDBConnection() {
+  if (!useSqlite) {
+    return await pool.getConnection();
+  }
+
+  return {
+    execute: (sql, params = []) => {
+      return new Promise((resolve, reject) => {
+        const s = sql.trim().toUpperCase();
+        if (s.startsWith('SELECT')) {
+          sqliteDb.all(sql, params, (err, rows) => {
+            if (err) return reject(err);
+            resolve([rows]);
+          });
+        } else {
+          sqliteDb.run(sql, params, function (err) {
+            if (err) return reject(err);
+            resolve([{ insertId: this.lastID, affectedRows: this.changes }]);
+          });
+        }
+      });
+    },
+    release: () => {},
+  };
+}
+
+// Validate DB connection at startup and fallback to SQLite if MySQL is unavailable
+(async () => {
+  try {
+    const conn = await pool.getConnection();
+    const [rows] = await conn.execute('SELECT 1 AS ok');
+    console.log('DB startup check passed:', rows);
+    conn.release();
+  } catch (err) {
+    console.error('DB startup check failed, falling back to SQLite:', err && err.message ? err.message : err);
+
+    // Initialize SQLite fallback
+    try {
+      const sqlite3 = require('sqlite3').verbose();
+      const path = require('path');
+      const dbFile = process.env.SQLITE_FILE || path.join(process.cwd(), 'fallback.db');
+      sqliteDb = new sqlite3.Database(dbFile);
+      useSqlite = true;
+
+      // Create minimal tables compatible with the app
+      const stmts = [
+        `CREATE TABLE IF NOT EXISTS users (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          name TEXT NOT NULL,
+          email TEXT NOT NULL UNIQUE,
+          password TEXT NOT NULL,
+          bio TEXT,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        );`,
+        `CREATE TABLE IF NOT EXISTS user_stats (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          user_id INTEGER NOT NULL,
+          posts INTEGER DEFAULT 0,
+          followers INTEGER DEFAULT 0,
+          following INTEGER DEFAULT 0,
+          communities INTEGER DEFAULT 0,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        );`,
+        `CREATE TABLE IF NOT EXISTS user_interests (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          user_id INTEGER NOT NULL,
+          interest TEXT NOT NULL,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        );`,
+        `CREATE TABLE IF NOT EXISTS user_settings (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          user_id INTEGER NOT NULL UNIQUE,
+          theme TEXT DEFAULT 'dark',
+          email_notifications INTEGER DEFAULT 1,
+          comment_notifications INTEGER DEFAULT 1,
+          public_profile INTEGER DEFAULT 1,
+          show_posts INTEGER DEFAULT 1,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        );`,
+        `CREATE TABLE IF NOT EXISTS posts (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          user_id INTEGER NOT NULL,
+          title TEXT NOT NULL,
+          content TEXT,
+          category TEXT,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        );`,
+      ];
+
+      for (const s of stmts) {
+        await new Promise((res, rej) => sqliteDb.run(s, (err) => (err ? rej(err) : res())));
+      }
+
+      console.log('SQLite fallback initialized at', dbFile);
+    } catch (sqliteErr) {
+      console.error('Failed to initialize SQLite fallback:', sqliteErr && sqliteErr.message ? sqliteErr.message : sqliteErr);
+    }
+  }
+})();
 
 const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key-change-in-production';
+
+// Debug endpoint to check DB connectivity
+app.get('/api/debug/db', async (req, res) => {
+  try {
+    const connection = await getDBConnection();
+    const [rows] = await connection.execute('SELECT 1 AS ok');
+    connection.release();
+    res.json({ ok: true, result: rows });
+  } catch (error) {
+    console.error('DB debug error:', error);
+    res.status(500).json({ ok: false, error: error.message });
+  }
+});
 
 // ============= Auth Routes =============
 
@@ -36,7 +160,7 @@ app.post('/api/auth/register', async (req, res) => {
       return res.status(400).json({ error: 'Name, email, and password are required' });
     }
 
-    const connection = await pool.getConnection();
+    const connection = await getDBConnection();
 
     // Check if user exists
     const [existingUser] = await connection.execute(
@@ -93,7 +217,8 @@ app.post('/api/auth/register', async (req, res) => {
     });
   } catch (error) {
     console.error('Register error:', error);
-    res.status(500).json({ error: 'Registration failed' });
+    // Return details for debugging (development only)
+    res.status(500).json({ error: 'Registration failed', details: error.message });
   }
 });
 
@@ -106,7 +231,7 @@ app.post('/api/auth/login', async (req, res) => {
       return res.status(400).json({ error: 'Email and password are required' });
     }
 
-    const connection = await pool.getConnection();
+    const connection = await getDBConnection();
 
     // Find user
     const [users] = await connection.execute(
@@ -167,7 +292,7 @@ const verifyToken = (req, res, next) => {
 // GET USER PROFILE
 app.get('/api/user/profile', verifyToken, async (req, res) => {
   try {
-    const connection = await pool.getConnection();
+    const connection = await getDBConnection();
 
     // Get user data
     const [users] = await connection.execute(
@@ -211,7 +336,7 @@ app.get('/api/user/profile', verifyToken, async (req, res) => {
 app.put('/api/user/profile', verifyToken, async (req, res) => {
   try {
     const { name, email, bio, interests } = req.body;
-    const connection = await pool.getConnection();
+    const connection = await getDBConnection();
 
     // Update user info
     await connection.execute(
@@ -250,7 +375,7 @@ app.put('/api/user/profile', verifyToken, async (req, res) => {
 // GET USER SETTINGS
 app.get('/api/user/settings', verifyToken, async (req, res) => {
   try {
-    const connection = await pool.getConnection();
+    const connection = await getDBConnection();
 
     const [settings] = await connection.execute(
       'SELECT theme, email_notifications, comment_notifications, public_profile, show_posts FROM user_settings WHERE user_id = ?',
@@ -280,7 +405,7 @@ app.get('/api/user/settings', verifyToken, async (req, res) => {
 app.put('/api/user/settings', verifyToken, async (req, res) => {
   try {
     const { theme, email_notifications, comment_notifications, public_profile, show_posts } = req.body;
-    const connection = await pool.getConnection();
+    const connection = await getDBConnection();
 
     await connection.execute(
       `UPDATE user_settings 
@@ -303,7 +428,7 @@ app.put('/api/user/settings', verifyToken, async (req, res) => {
 // GET USER POSTS
 app.get('/api/user/posts', verifyToken, async (req, res) => {
   try {
-    const connection = await pool.getConnection();
+    const connection = await getDBConnection();
 
     const [posts] = await connection.execute(
       'SELECT id, title, content, category, created_at FROM posts WHERE user_id = ? ORDER BY created_at DESC',
@@ -328,7 +453,7 @@ app.post('/api/user/posts', verifyToken, async (req, res) => {
       return res.status(400).json({ error: 'Title is required' });
     }
 
-    const connection = await pool.getConnection();
+    const connection = await getDBConnection();
 
     const [result] = await connection.execute(
       'INSERT INTO posts (user_id, title, content, category) VALUES (?, ?, ?, ?)',
@@ -348,7 +473,7 @@ app.post('/api/user/posts', verifyToken, async (req, res) => {
 app.delete('/api/user/posts/:postId', verifyToken, async (req, res) => {
   try {
     const { postId } = req.params;
-    const connection = await pool.getConnection();
+    const connection = await getDBConnection();
 
     // Verify ownership
     const [posts] = await connection.execute(
