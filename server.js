@@ -528,6 +528,68 @@ app.get('/api/user/posts', verifyToken, async (req, res) => {
   }
 });
 
+// Public Posts API
+// Get recent posts (public)
+app.get('/api/posts', async (req, res) => {
+  try {
+    const connection = await getDBConnection();
+    const [posts] = await connection.execute(
+      `SELECT p.id, p.title, p.content, p.category, p.created_at, u.id as user_id, u.name as author, u.username as authorUsername
+       FROM posts p
+       JOIN users u ON p.user_id = u.id
+       ORDER BY p.created_at DESC`
+    );
+    connection.release();
+    res.json(posts);
+  } catch (error) {
+    console.error('Get posts (public) error:', error);
+    res.status(500).json({ error: 'Failed to get posts' });
+  }
+});
+
+// Create a post (authenticated)
+app.post('/api/posts', verifyToken, async (req, res) => {
+  try {
+    const { title, content, category } = req.body;
+    if (!title) return res.status(400).json({ error: 'Title is required' });
+
+    const connection = await getDBConnection();
+    const [result] = await connection.execute(
+      'INSERT INTO posts (user_id, title, content, category) VALUES (?, ?, ?, ?)',
+      [req.userId, title, content || '', category || 'General']
+    );
+    connection.release();
+    res.json({ success: true, postId: result.insertId });
+  } catch (error) {
+    console.error('Create post error (public API):', error);
+    res.status(500).json({ error: 'Failed to create post' });
+  }
+});
+
+// Delete a post (authenticated, owner only)
+app.delete('/api/posts/:id', verifyToken, async (req, res) => {
+  try {
+    const postId = req.params.id;
+    const connection = await getDBConnection();
+    const [posts] = await connection.execute('SELECT id, user_id FROM posts WHERE id = ?', [postId]);
+    if (!posts || posts.length === 0) {
+      connection.release();
+      return res.status(404).json({ error: 'Post not found' });
+    }
+    const post = posts[0];
+    if (post.user_id !== req.userId) {
+      connection.release();
+      return res.status(403).json({ error: 'Unauthorized' });
+    }
+    await connection.execute('DELETE FROM posts WHERE id = ?', [postId]);
+    connection.release();
+    res.json({ success: true, message: 'Post deleted' });
+  } catch (error) {
+    console.error('Delete post error:', error);
+    res.status(500).json({ error: 'Failed to delete post' });
+  }
+});
+
 // CREATE POST
 app.post('/api/user/posts', verifyToken, async (req, res) => {
   try {
