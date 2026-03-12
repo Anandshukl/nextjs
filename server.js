@@ -501,6 +501,14 @@ app.get('/api/health', (req, res) => {
   res.json({ status: 'Backend is running' });
 });
 
+// Root route
+app.get('/', (req, res) => {
+  res.json({
+    status: 'Backend API running',
+    message: 'Use /api endpoints'
+  });
+});
+
 // Start server
 app.listen(PORT, () => {
   console.log(`Backend server running on port ${PORT}`);
