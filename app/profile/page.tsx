@@ -8,8 +8,11 @@ import { userAPI } from "../lib/api";
 interface UserData {
   id?: number;
   name: string;
+  username?: string;
   email: string;
   bio: string;
+  profileImage?: string;
+  socialLinks?: string[];
   interests: string[];
   posts: number;
   followers: number;
@@ -61,6 +64,20 @@ export default function Profile() {
     }
   };
 
+  const handleSocialLinksChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (editFormData) {
+      const links = e.target.value.split(',').map(s => s.trim()).filter(Boolean);
+      setEditFormData({ ...editFormData, socialLinks: links });
+    }
+  };
+
+  const handleImageChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (editFormData && e.target.files && e.target.files[0]) {
+      // For now store file name; actual upload to cloud will be implemented later
+      setEditFormData({ ...editFormData, profileImage: e.target.files[0].name });
+    }
+  };
+
   const handleInterestChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (editFormData) {
       const interests = e.target.value.split(',').map(i => i.trim());
@@ -79,8 +96,11 @@ export default function Profile() {
     try {
       const updated = await userAPI.updateProfile({
         name: editFormData.name,
+        username: editFormData.username,
         bio: editFormData.bio,
-        interests: editFormData.interests
+        interests: editFormData.interests,
+        profileImage: editFormData.profileImage,
+        socialLinks: editFormData.socialLinks || []
       });
       setUserData(updated);
       setIsEditing(false);
@@ -184,6 +204,18 @@ export default function Profile() {
               </div>
 
               <div>
+                <label className="block text-slate-300 mb-2 font-semibold">Username</label>
+                <input
+                  type="text"
+                  name="username"
+                  value={editFormData?.username || ''}
+                  onChange={handleEditChange}
+                  disabled={saveLoading}
+                  className="w-full bg-slate-700 border border-gold/20 rounded-lg px-4 py-3 text-white focus:outline-none focus:border-gold transition disabled:opacity-50"
+                />
+              </div>
+
+              <div>
                 <label className="block text-slate-300 mb-2 font-semibold">Bio</label>
                 <textarea
                   name="bio"
@@ -204,6 +236,30 @@ export default function Profile() {
                   disabled={saveLoading}
                   className="w-full bg-slate-700 border border-gold/20 rounded-lg px-4 py-3 text-white focus:outline-none focus:border-gold transition disabled:opacity-50"
                 />
+              </div>
+
+              <div>
+                <label className="block text-slate-300 mb-2 font-semibold">Social Links (comma-separated URLs)</label>
+                <input
+                  type="text"
+                  value={(editFormData?.socialLinks || []).join(', ') }
+                  onChange={handleSocialLinksChange}
+                  disabled={saveLoading}
+                  className="w-full bg-slate-700 border border-gold/20 rounded-lg px-4 py-3 text-white focus:outline-none focus:border-gold transition disabled:opacity-50"
+                />
+              </div>
+
+              <div>
+                <label className="block text-slate-300 mb-2 font-semibold">Profile Image</label>
+                <input
+                  type="file"
+                  name="profileImage"
+                  accept="image/*"
+                  onChange={handleImageChange}
+                  disabled={saveLoading}
+                  className="w-full text-slate-200"
+                />
+                <p className="text-sm text-slate-400 mt-2">Image upload will use cloud storage later; currently we store filename.</p>
               </div>
 
               <div className="flex gap-4">

@@ -3,10 +3,14 @@ const cors = require('cors');
 const mysql = require('mysql2/promise');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
+const cookieParser = require('cookie-parser');
 require('dotenv').config();
 
 const app = express();
 const PORT = process.env.PORT || 5000;
+
+// cookie parser to read refresh token cookie
+app.use(cookieParser());
 
 console.log('Loaded env DB_HOST=', process.env.DB_HOST, 'DB_PORT=', process.env.DB_PORT);
 
@@ -79,9 +83,12 @@ async function getDBConnection() {
         `CREATE TABLE IF NOT EXISTS users (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           name TEXT NOT NULL,
+          username TEXT NOT NULL UNIQUE,
           email TEXT NOT NULL UNIQUE,
           password TEXT NOT NULL,
           bio TEXT,
+          profile_image TEXT DEFAULT NULL,
+          social_links TEXT DEFAULT '[]',
           created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
           updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
         );`,
@@ -135,6 +142,26 @@ async function getDBConnection() {
 })();
 
 const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key-change-in-production';
+const JWT_REFRESH_SECRET = process.env.JWT_REFRESH_SECRET || process.env.JWT_SECRET || 'your-refresh-secret-change';
+
+function generateAccessToken(user) {
+  return jwt.sign({ userId: user.id, email: user.email }, JWT_SECRET, { expiresIn: '15m' });
+}
+
+function generateRefreshToken(user) {
+  return jwt.sign({ userId: user.id }, JWT_REFRESH_SECRET, { expiresIn: '7d' });
+}
+
+function sendRefreshTokenCookie(res, token) {
+  const isProd = process.env.NODE_ENV === 'production';
+  res.cookie('refreshToken', token, {
+    httpOnly: true,
+    secure: isProd,
+    sameSite: 'lax',
+    path: '/api/auth/refresh',
+    maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
+  });
+}
 
 // Debug endpoint to check DB connectivity
 app.get('/api/debug/db', async (req, res) => {
@@ -164,8 +191,8 @@ app.post('/api/auth/register', async (req, res) => {
 
     // Check if user exists
     const [existingUser] = await connection.execute(
-      'SELECT id FROM users WHERE email = ?',
-      [email]
+      'SELECT id FROM users WHERE email = ? OR username = ?',
+      [email, email]
     );
 
     if (existingUser.length > 0) {
@@ -176,10 +203,13 @@ app.post('/api/auth/register', async (req, res) => {
     // Hash password
     const hashedPassword = await bcrypt.hash(password, 10);
 
+    // Derive a simple username from name if not provided
+    const username = name.toLowerCase().replace(/\s+/g, '') || email.split('@')[0];
+
     // Create user
     const [result] = await connection.execute(
-      'INSERT INTO users (name, email, password, bio) VALUES (?, ?, ?, ?)',
-      [name, email, hashedPassword, 'Cultural Enthusiast & Content Creator']
+      'INSERT INTO users (name, username, email, password, bio, profile_image, social_links) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      [name, username, email, hashedPassword, 'Cultural Enthusiast & Content Creator', null, JSON.stringify([])]
     );
 
     const userId = result.insertId;
@@ -256,12 +286,17 @@ app.post('/api/auth/login', async (req, res) => {
 
     connection.release();
 
-    // Generate token
-    const token = jwt.sign({ userId: user.id, email: user.email }, JWT_SECRET, { expiresIn: '7d' });
+    // Generate tokens
+    const accessToken = generateAccessToken(user);
+    const refreshToken = generateRefreshToken(user);
 
-    res.json({ 
-      success: true, 
-      token, 
+    // Set refresh token as HttpOnly secure cookie (used by /api/auth/refresh)
+    sendRefreshTokenCookie(res, refreshToken);
+
+    // Return access token (client may store it as they prefer)
+    res.json({
+      success: true,
+      accessToken,
       user: { id: user.id, name: user.name, email: user.email }
     });
   } catch (error) {
@@ -287,6 +322,46 @@ const verifyToken = (req, res, next) => {
   }
 };
 
+// Refresh token endpoint - issues new access token when refresh cookie is valid
+app.post('/api/auth/refresh', async (req, res) => {
+  try {
+    const token = req.cookies.refreshToken;
+    if (!token) return res.status(401).json({ error: 'No refresh token' });
+
+    let payload;
+    try {
+      payload = jwt.verify(token, JWT_REFRESH_SECRET);
+    } catch (err) {
+      return res.status(401).json({ error: 'Invalid refresh token' });
+    }
+
+    const userId = payload.userId;
+    // Optionally: verify user still exists
+    const connection = await getDBConnection();
+    const [users] = await connection.execute('SELECT id, email FROM users WHERE id = ?', [userId]);
+    connection.release();
+
+    if (users.length === 0) return res.status(401).json({ error: 'Invalid user' });
+
+    const user = users[0];
+    const accessToken = generateAccessToken(user);
+    // Optionally rotate refresh token
+    const newRefreshToken = generateRefreshToken(user);
+    sendRefreshTokenCookie(res, newRefreshToken);
+
+    res.json({ accessToken });
+  } catch (error) {
+    console.error('Refresh token error:', error);
+    res.status(500).json({ error: 'Failed to refresh token' });
+  }
+});
+
+// Logout - clear refresh token cookie
+app.post('/api/auth/logout', (req, res) => {
+  res.clearCookie('refreshToken', { path: '/api/auth/refresh' });
+  res.json({ success: true });
+});
+
 // ============= User Routes =============
 
 // GET USER PROFILE
@@ -296,7 +371,7 @@ app.get('/api/user/profile', verifyToken, async (req, res) => {
 
     // Get user data
     const [users] = await connection.execute(
-      'SELECT id, name, email, bio FROM users WHERE id = ?',
+      'SELECT id, name, username, email, bio, profile_image, social_links FROM users WHERE id = ?',
       [req.userId]
     );
 
@@ -322,8 +397,17 @@ app.get('/api/user/profile', verifyToken, async (req, res) => {
     connection.release();
 
     res.json({
-      ...user,
-      ...stats[0],
+      id: user.id,
+      name: user.name,
+      username: user.username,
+      email: user.email,
+      bio: user.bio,
+      profileImage: user.profile_image,
+      socialLinks: user.social_links ? JSON.parse(user.social_links) : [],
+      posts: stats[0]?.posts || 0,
+      followers: stats[0]?.followers || 0,
+      following: stats[0]?.following || 0,
+      communities: stats[0]?.communities || 0,
       interests: interests.map(i => i.interest)
     });
   } catch (error) {
@@ -335,13 +419,13 @@ app.get('/api/user/profile', verifyToken, async (req, res) => {
 // UPDATE USER PROFILE
 app.put('/api/user/profile', verifyToken, async (req, res) => {
   try {
-    const { name, email, bio, interests } = req.body;
+    const { name, username, email, bio, interests, profileImage, socialLinks } = req.body;
     const connection = await getDBConnection();
 
     // Update user info
     await connection.execute(
-      'UPDATE users SET name = ?, email = ?, bio = ? WHERE id = ?',
-      [name, email, bio, req.userId]
+      'UPDATE users SET name = ?, username = ?, email = ?, bio = ?, profile_image = ?, social_links = ? WHERE id = ?',
+      [name, username || null, email, bio, profileImage || null, socialLinks ? JSON.stringify(socialLinks) : JSON.stringify([]), req.userId]
     );
 
     // Update interests
