@@ -590,6 +590,38 @@ app.delete('/api/posts/:id', verifyToken, async (req, res) => {
   }
 });
 
+// Edit a post (authenticated, owner only)
+app.put('/api/posts/:id', verifyToken, async (req, res) => {
+  try {
+    const postId = req.params.id;
+    const { title, content, category } = req.body;
+    const connection = await getDBConnection();
+
+    const [posts] = await connection.execute('SELECT id, user_id FROM posts WHERE id = ?', [postId]);
+    if (!posts || posts.length === 0) {
+      connection.release();
+      return res.status(404).json({ error: 'Post not found' });
+    }
+
+    const post = posts[0];
+    if (post.user_id !== req.userId) {
+      connection.release();
+      return res.status(403).json({ error: 'Unauthorized' });
+    }
+
+    await connection.execute(
+      'UPDATE posts SET title = ?, content = ?, category = ? WHERE id = ?',
+      [title, content, category || 'General', postId]
+    );
+
+    connection.release();
+    res.json({ success: true, message: 'Post updated' });
+  } catch (error) {
+    console.error('Update post error:', error);
+    res.status(500).json({ error: 'Failed to update post' });
+  }
+});
+
 // CREATE POST
 app.post('/api/user/posts', verifyToken, async (req, res) => {
   try {
