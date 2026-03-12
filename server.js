@@ -3,6 +3,8 @@ const cors = require('cors');
 const mysql = require('mysql2/promise');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
+const helmet = require('helmet');
+const rateLimit = require('express-rate-limit');
 const cookieParser = require('cookie-parser');
 require('dotenv').config();
 
@@ -12,132 +14,76 @@ const PORT = process.env.PORT || 5000;
 // cookie parser to read refresh token cookie
 app.use(cookieParser());
 
+// Security: set secure HTTP headers and rate limit requests to mitigate brute-force/XSS/header attacks
+app.use(helmet());
+const limiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 100 // limit each IP to 100 requests per windowMs
+});
+app.use(limiter);
+
 console.log('Loaded env DB_HOST=', process.env.DB_HOST, 'DB_PORT=', process.env.DB_PORT);
 
 // Middleware
 app.use(cors());
 app.use(express.json());
 
-// MySQL Connection Pool
-const pool = mysql.createPool({
-  host: process.env.DB_HOST || 'localhost',
-  port: process.env.DB_PORT ? Number(process.env.DB_PORT) : 3306,
-  user: process.env.DB_USER || 'root',
-  password: process.env.DB_PASSWORD || '',
-  database: process.env.DB_NAME || 'cultural_hub',
-  waitForConnections: true,
-  connectionLimit: 10,
-  queueLimit: 0
-});
-// Adapter variables
-let useSqlite = false;
-let sqliteDb = null;
+// Database connection handling
+// Support Postgres via DATABASE_URL (Supabase / Neon / Render) or fallback to MySQL pool if provided
+let dbType = 'mysql';
+let mysqlPool = null;
+let pgPool = null;
+
+if (process.env.DATABASE_URL) {
+  dbType = 'pg';
+  pgPool = new PgPool({ connectionString: process.env.DATABASE_URL, ssl: { rejectUnauthorized: false } });
+  console.log('Using Postgres via DATABASE_URL');
+} else {
+  mysqlPool = mysql.createPool({
+    host: process.env.DB_HOST || 'localhost',
+    port: process.env.DB_PORT ? Number(process.env.DB_PORT) : 3306,
+    user: process.env.DB_USER || 'root',
+    password: process.env.DB_PASSWORD || '',
+    database: process.env.DB_NAME || 'cultural_hub',
+    waitForConnections: true,
+    connectionLimit: 10,
+    queueLimit: 0
+  });
+  console.log('Using MySQL pool (DB_HOST/DB_PORT)');
+}
 
 // Helper: returns a connection-like object with `execute(sql, params)` and `release()`
 async function getDBConnection() {
-  if (!useSqlite) {
-    return await pool.getConnection();
-  }
-
-  return {
-    execute: (sql, params = []) => {
-      return new Promise((resolve, reject) => {
-        const s = sql.trim().toUpperCase();
-        if (s.startsWith('SELECT')) {
-          sqliteDb.all(sql, params, (err, rows) => {
-            if (err) return reject(err);
-            resolve([rows]);
-          });
-        } else {
-          sqliteDb.run(sql, params, function (err) {
-            if (err) return reject(err);
-            resolve([{ insertId: this.lastID, affectedRows: this.changes }]);
-          });
+  if (dbType === 'pg') {
+    return {
+      execute: async (sql, params = []) => {
+        // convert ? placeholders to $1, $2 for pg
+        let idx = 0;
+        const converted = sql.replace(/\?/g, () => { idx += 1; return '$' + idx; });
+        let q = converted;
+        // For INSERTs, append RETURNING id if not present so callers can get insertId
+        if (/^\s*INSERT/i.test(sql) && !/RETURNING\s+/i.test(converted)) {
+          q = converted + ' RETURNING id';
         }
-      });
-    },
-    release: () => {},
-  };
+        const res = await pgPool.query(q, params);
+        if (/^\s*SELECT/i.test(sql)) return [res.rows];
+        return [{ insertId: res.rows[0]?.id, affectedRows: res.rowCount }];
+      },
+      release: () => {}
+    };
+  }
+  return await mysqlPool.getConnection();
 }
 
-// Validate DB connection at startup and fallback to SQLite if MySQL is unavailable
+// Validate DB connection at startup
 (async () => {
   try {
-    const conn = await pool.getConnection();
+    const conn = await getDBConnection();
     const [rows] = await conn.execute('SELECT 1 AS ok');
     console.log('DB startup check passed:', rows);
     conn.release();
   } catch (err) {
-    console.error('DB startup check failed, falling back to SQLite:', err && err.message ? err.message : err);
-
-    // Initialize SQLite fallback
-    try {
-      const sqlite3 = require('sqlite3').verbose();
-      const path = require('path');
-      const dbFile = process.env.SQLITE_FILE || path.join(process.cwd(), 'fallback.db');
-      sqliteDb = new sqlite3.Database(dbFile);
-      useSqlite = true;
-
-      // Create minimal tables compatible with the app
-      const stmts = [
-        `CREATE TABLE IF NOT EXISTS users (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          name TEXT NOT NULL,
-          username TEXT NOT NULL UNIQUE,
-          email TEXT NOT NULL UNIQUE,
-          password TEXT NOT NULL,
-          bio TEXT,
-          profile_image TEXT DEFAULT NULL,
-          social_links TEXT DEFAULT '[]',
-          created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-          updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-        );`,
-        `CREATE TABLE IF NOT EXISTS user_stats (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          user_id INTEGER NOT NULL,
-          posts INTEGER DEFAULT 0,
-          followers INTEGER DEFAULT 0,
-          following INTEGER DEFAULT 0,
-          communities INTEGER DEFAULT 0,
-          created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-          updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-        );`,
-        `CREATE TABLE IF NOT EXISTS user_interests (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          user_id INTEGER NOT NULL,
-          interest TEXT NOT NULL,
-          created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-        );`,
-        `CREATE TABLE IF NOT EXISTS user_settings (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          user_id INTEGER NOT NULL UNIQUE,
-          theme TEXT DEFAULT 'dark',
-          email_notifications INTEGER DEFAULT 1,
-          comment_notifications INTEGER DEFAULT 1,
-          public_profile INTEGER DEFAULT 1,
-          show_posts INTEGER DEFAULT 1,
-          created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-          updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-        );`,
-        `CREATE TABLE IF NOT EXISTS posts (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          user_id INTEGER NOT NULL,
-          title TEXT NOT NULL,
-          content TEXT,
-          category TEXT,
-          created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-          updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-        );`,
-      ];
-
-      for (const s of stmts) {
-        await new Promise((res, rej) => sqliteDb.run(s, (err) => (err ? rej(err) : res())));
-      }
-
-      console.log('SQLite fallback initialized at', dbFile);
-    } catch (sqliteErr) {
-      console.error('Failed to initialize SQLite fallback:', sqliteErr && sqliteErr.message ? sqliteErr.message : sqliteErr);
-    }
+    console.error('DB startup check failed:', err && err.message ? err.message : err);
   }
 })();
 
@@ -677,6 +623,44 @@ app.delete('/api/user/posts/:postId', verifyToken, async (req, res) => {
 // Health check
 app.get('/api/health', (req, res) => {
   res.json({ status: 'Backend is running' });
+});
+
+// Stats: posts per week (last 8 weeks)
+app.get('/api/stats/posts-per-week', async (req, res) => {
+  try {
+    const connection = await getDBConnection();
+    const [rows] = await connection.execute('SELECT created_at FROM posts');
+    // rows may be array of objects with created_at as Date or string
+    const now = new Date();
+    const counts = new Array(8).fill(0);
+    const labels = [];
+
+    // Build labels: 7 weeks ago -> this week
+    for (let i = 7; i >= 0; i--) {
+      const d = new Date(now);
+      d.setDate(d.getDate() - i * 7);
+      d.setHours(0, 0, 0, 0);
+      labels.push(d.toISOString().slice(0, 10));
+    }
+
+    for (const r of rows) {
+      const created = r.created_at || r.createdAt || r.createdAt;
+      const pd = new Date(created);
+      if (isNaN(pd.getTime())) continue;
+      const diffDays = Math.floor((now - pd) / (1000 * 60 * 60 * 24));
+      const weekIndex = Math.floor(diffDays / 7);
+      if (weekIndex >= 0 && weekIndex < 8) {
+        const idx = 7 - weekIndex;
+        counts[idx] += 1;
+      }
+    }
+
+    connection.release();
+    res.json({ labels, values: counts });
+  } catch (error) {
+    console.error('Stats error:', error);
+    res.status(500).json({ error: 'Failed to compute stats' });
+  }
 });
 
 // Root route

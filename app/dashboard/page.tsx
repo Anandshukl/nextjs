@@ -1,7 +1,25 @@
+import React, { useEffect, useState } from "react";
 import Link from "next/link";
 import { AuthNav } from "../components/AuthNav";
+import PostsChart from "../components/PostsChart";
 
 export default function Dashboard() {
+  const [chartData, setChartData] = useState<{ labels: string[]; values: number[] }>({ labels: [], values: [] });
+
+  useEffect(() => {
+    async function fetchStats() {
+      try {
+        const base = process.env.NEXT_PUBLIC_API_URL || '';
+        const res = await fetch(base + '/api/stats/posts-per-week');
+        if (!res.ok) return;
+        const json = await res.json();
+        setChartData({ labels: json.labels || [], values: json.values || [] });
+      } catch (e) {
+        console.error('Failed fetching stats', e);
+      }
+    }
+    fetchStats();
+  }, []);
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 text-white">
       {/* Navigation */}
@@ -58,6 +76,16 @@ export default function Dashboard() {
           <div className="bg-slate-800 border border-gold/20 rounded-lg p-6 text-center">
             <p className="text-4xl font-bold text-gold">8</p>
             <p className="text-slate-300 mt-2">Communities Joined</p>
+          </div>
+        </div>
+        
+        {/* Posts Chart */}
+        <div className="mt-10">
+          <div className="bg-slate-800 border border-gold/20 rounded-lg p-6">
+            <h3 className="text-xl font-bold text-gold mb-4">Posts Activity</h3>
+            <div style={{ height: 260 }}>
+              <PostsChart data={chartData} />
+            </div>
           </div>
         </div>
       </section>
